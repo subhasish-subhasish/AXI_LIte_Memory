@@ -28,12 +28,11 @@ This repository demonstrates my capability in **AXI protocol implementation**, *
 
 ### ✔ Finite State Machine (FSM)
 Clean, well-structured 6-state controller:
-- `ST_IDLE`
-- `ST_WRITE_ADDR`
-- `ST_WRITE_DATA`
-- `ST_WRITE_RESP`
-- `ST_READ_ADDR`
-- `ST_READ_DATA`
+IDLE,
+WRITE_CHANNEL,
+WRESP_CHANNEL,
+RADDR_CHANNEL,
+RDATA_CHANNEL
 
 Implements AXI-Lite handshake rules exactly as specified by ARM.
 
