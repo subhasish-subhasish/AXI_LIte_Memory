@@ -1,10 +1,10 @@
 `timescale 1ns/1ps
 
-module tb_axilite_slave;
+module tb;
     // Parameters
     localparam ADDR_WIDTH = 32;
     localparam DATA_WIDTH = 32;
-    localparam DEPTH      = 128;
+    localparam MEM_SIZE_BYTES      = 64;
 
     // DUT signals
     reg                     clk;
@@ -36,7 +36,7 @@ module tb_axilite_slave;
     axilite_slave #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
-        .DEPTH(DEPTH)
+        .MEM_SIZE_BYTES(MEM_SIZE_BYTES)
     ) dut (
         .s_axi_aclk   (clk),
         .s_axi_aresetn(rstn),
@@ -64,6 +64,9 @@ module tb_axilite_slave;
         .s_axi_rresp (s_axi_rresp)
     );
     
+    function  void print(string tag, logic [ADDR_WIDTH-1:0] addr, logic [DATA_WIDTH-1:0] data, logic [(DATA_WIDTH/8)-1:0] wstrb =0 );
+        $display("Time = %t | Tag = %s | ADDR = %h | DATA = %h | WSTRB = %b", $time, tag, addr, data, wstrb);
+    endfunction
     // Clock Generation
     initial begin
         clk = 0;
@@ -93,6 +96,7 @@ module tb_axilite_slave;
         s_axi_wvalid  <= 1;
 
         // wait for AWREADY & WREADY
+        
         wait(s_axi_awready && s_axi_wready);
         @(posedge clk);
         s_axi_awvalid <= 0;
@@ -104,7 +108,7 @@ module tb_axilite_slave;
         @(posedge clk);
         s_axi_bready <= 0;
 
-        $display("[WRITE] ADDR=%h DATA=%h WSTRB=%b", addr, data, wstrb);
+        print("Write",addr, data, wstrb);
     end
     endtask
      // AXI-Lite Read Task
@@ -113,56 +117,51 @@ module tb_axilite_slave;
         @(posedge clk);
         s_axi_araddr  <= addr;
         s_axi_arvalid <= 1;
+        //$display("first");
 
-        wait(s_axi_arready);
+        wait(!s_axi_arready);
+        //$display("CS = %0d | NS = %s", dut.CS.name(), dut.NS.name());
+        //$display("Second");
         @(posedge clk);
         s_axi_arvalid <= 0;
-
         // wait for RVALID
         s_axi_rready <= 1;
         wait(s_axi_rvalid);
+        //$display("Third");
         data_out = s_axi_rdata;
         @(posedge clk);
         s_axi_rready <= 0;
-
-        $display("[READ ] ADDR=%h DATA=%h", addr, data_out);
+        
+        print("Read", addr, data_out);
     end
     endtask
+    int addr_list [4] = '{32'h0000_0000,
+                      32'h0000_0004,
+                      32'h0000_0008,
+                      32'h0000_0012};
 
+    int wstrb_list [4] = '{4'b0001,
+                      4'b0010,
+                      4'b0011,
+                      4'b0100};
     // Test Sequence
     initial begin
         integer i;
         reg [31:0] rdata;
         @(posedge rstn);
         #20;
-        //---------------------------------------
-        // 1. FULL WORD WRITE
-        //---------------------------------------
-        axi_write(32'h0000_0004, 32'hAABBCCDD, 4'b1111);
-        //---------------------------------------
-        // 2. READ BACK
-        //---------------------------------------
-        axi_read(32'h0000_0004, rdata);
-        //---------------------------------------
-        // 3. PARTIAL BYTE WRITE
-        //---------------------------------------
-        axi_write(32'h0000_0004, 32'hAAAAAA11, 4'b0001); // write only lowest byte
-        //---------------------------------------
-        // 4. READ BACK
-        //---------------------------------------
-        axi_read(32'h0000_0004, rdata);
 
-        //---------------------------------------
-        // 5. RANDOM MULTIPLE WRITES/READS
-        //---------------------------------------
-        for (i=0; i<5; i=i+1) begin
-            axi_write(i*4, 32'h1000 + i, 4'b1111);
-            axi_read(i*4, rdata);
+        for (int i = 0; i < 4; i++) begin
+            axi_write(addr_list[i], 32'hAAAAAAAA, wstrb_list[i]);
+            axi_read(addr_list[i], rdata);
         end
-
         $display("Test completed.");
         #50;
         $stop;
+    end
+
+    always @(posedge clk) begin
+        $display("Time= %0t | CS=%s | NS=%s ", $time, dut.CS.name(),dut.NS.name());
     end
 
 endmodule
