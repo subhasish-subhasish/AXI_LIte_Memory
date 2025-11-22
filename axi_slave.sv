@@ -3,7 +3,9 @@
 module axilite_slave #(
     parameter ADDR_WIDTH = 32,
     parameter DATA_WIDTH = 32,
-    parameter DEPTH = 128          // number of 32-bit words (addressed by word)
+    parameter int MEM_SIZE_BYTES = 512,      // memory size in bytes
+    localparam int WORD_SIZE    = DATA_WIDTH / 8,
+    localparam int DEPTH        = MEM_SIZE_BYTES / WORD_SIZE
 )(
     //global signal
     input  wire                    s_axi_aclk,
@@ -38,12 +40,11 @@ module axilite_slave #(
 );
 
     typedef enum logic [2:0] {
-        ST_IDLE,
-        ST_WRITE_ADDR,
-        ST_WRITE_DATA,
-        ST_WRITE_RESP,
-        ST_READ_ADDR,
-        ST_READ_DATA
+        IDLE,
+        WRITE_CHANNEL,
+        WRESP_CHANNEL,
+        RADDR_CHANNEL,
+        RDATA_CHANNEL
     } state_t;
 
     state_t CS, NS;
@@ -74,40 +75,19 @@ module axilite_slave #(
 
     always_ff @(posedge s_axi_aclk or negedge s_axi_aresetn) begin
         if (!s_axi_aresetn) begin
-            CS <= ST_IDLE;
-
-             // clear handshake outputs
-            //s_axi_awready <= 1'b0;
-            //s_axi_wready  <= 1'b0;
-            //s_axi_bvalid  <= 1'b0;
-            //s_axi_bresp   <= RESP_OKAY;
-            //s_axi_arready <= 1'b0;
-            //s_axi_rvalid  <= 1'b0;
-            //s_axi_rdata   <= '0;
-            //s_axi_rresp   <= RESP_OKAY;
-
-            // clear internals
-            // awaddr_reg <= '0;
-            // araddr_reg <= '0;
-            // wdata_reg  <= '0;
-            // rdata_reg  <= '0;
-            // wstrb_reg <=  '0;
+            CS <= IDLE;
 
             aw_captured <= 1'b0;
             w_captured  <= 1'b0;
             ar_captured <= 1'b0;
 
-            // initialize memory to zero (synthesis tools will optimize)
-            for (int i = 0; i < DEPTH; i++) begin
-                mem[i] <= '0;
-            end
+            
         end else begin
             CS <= NS;
-
             if(s_axi_awvalid && s_axi_awready)begin
                 aw_captured <= 1'b1;
                 awaddr_reg  <= s_axi_awaddr;
-            end else if(CS == ST_WRITE_RESP && s_axi_bready && s_axi_bvalid)begin
+            end else if(CS == WRESP_CHANNEL && s_axi_bready && s_axi_bvalid)begin
                 aw_captured <= 1'b0;
             end
 
@@ -115,14 +95,14 @@ module axilite_slave #(
                 w_captured <= 1'b1;
                 wdata_reg <= s_axi_wdata;
                 wstrb_reg <= s_axi_wstrb;
-            end else if(CS == ST_WRITE_RESP && s_axi_bready && s_axi_bvalid)begin
+            end else if(CS == WRESP_CHANNEL && s_axi_bready && s_axi_bvalid)begin
                 w_captured <= 1'b0;
             end 
 
             if (s_axi_arvalid && s_axi_arready) begin
                 ar_captured <= 1'b1;
                 araddr_reg  <= s_axi_araddr;
-            end else if (CS == ST_READ_DATA && s_axi_rready && s_axi_rvalid) begin
+            end else if (CS == RDATA_CHANNEL && s_axi_rready && s_axi_rvalid) begin
                 ar_captured <= 1'b0;
             end
         end
@@ -133,43 +113,30 @@ module axilite_slave #(
         // default next state
         NS = CS;
         case(CS)
-            ST_IDLE: begin
+            IDLE: begin
                 if(s_axi_awvalid && !aw_captured )
-                    NS = ST_WRITE_ADDR;
+                    NS = WRITE_CHANNEL;
                 else if(s_axi_arvalid && !ar_captured)
-                    NS = ST_READ_ADDR;
+                    NS = RADDR_CHANNEL;
                 else
-                    NS = ST_IDLE;
+                    NS = IDLE;
             end
-            ST_WRITE_ADDR:begin
-                if(s_axi_wvalid && !w_captured )
-                    NS = ST_WRITE_DATA;
-                else if(w_captured)
-                    NS = ST_WRITE_DATA;
-                else 
-                    NS = ST_WRITE_ADDR;
+            WRITE_CHANNEL:begin
+                if (s_axi_wvalid || w_captured)
+                    NS = WRESP_CHANNEL;
             end
-            ST_WRITE_DATA:begin
-                NS = ST_WRITE_RESP;
+            WRESP_CHANNEL:begin
+                 if (s_axi_bvalid && s_axi_bready)
+                    NS = IDLE;
             end
-            ST_WRITE_RESP:begin 
-                if (s_axi_bvalid && s_axi_bready) begin
-                    NS = ST_IDLE;
-                end else begin
-                    NS = ST_WRITE_RESP;
-                end
+            RADDR_CHANNEL: begin
+                NS = RDATA_CHANNEL;
             end
-            ST_READ_ADDR:begin
-                NS = ST_READ_DATA;
+            RDATA_CHANNEL: begin
+                if (s_axi_rvalid && s_axi_rready)
+                    NS = IDLE;
             end
-            ST_READ_DATA:begin
-                if (s_axi_rvalid && s_axi_rready) begin
-                    NS = ST_IDLE;
-                end else begin
-                    NS = ST_READ_DATA;
-                end
-            end
-            default: NS = ST_IDLE;
+            default: NS = IDLE;
         endcase
     end
 
@@ -188,32 +155,29 @@ module axilite_slave #(
         // Default computed rdata_reg
         rdata_reg = '0;
 
-        case(NS)
-            ST_IDLE: begin
+        case(CS)
+            IDLE: begin
                 // ready to accept AW/W/AR when idle (but if already captured, rely on flags)
                 s_axi_awready = ~aw_captured;
                 s_axi_wready  = ~w_captured;
                 s_axi_arready = ~ar_captured;
             end
-            ST_WRITE_ADDR:begin
+            WRITE_CHANNEL:begin
                 // assert awready until we capture AW (captured in seq block)
                 s_axi_awready = ~aw_captured;
                 s_axi_wready  = ~w_captured; // also accept W if ready
             end
-            ST_WRITE_DATA:begin
-                s_axi_wready = 1'b1;
-            end
-            ST_WRITE_RESP:begin
-                s_axi_bvalid = 1'b1;
+            WRESP_CHANNEL: begin
+                s_axi_bvalid = 1;
                 s_axi_bresp  = RESP_OKAY;
             end
-            ST_READ_ADDR:begin
-                s_axi_arready = ~ar_captured;
+            RADDR_CHANNEL: begin
+                s_axi_arready = !ar_captured;
             end
-            ST_READ_DATA:begin
-                s_axi_rvalid = 1'b1;
-                if ( (araddr_reg >> ADDR_WORD_OFFSET) < DEPTH ) begin
-                    rdata_reg = mem[ araddr_reg >> ADDR_WORD_OFFSET ];
+            RDATA_CHANNEL: begin
+                s_axi_rvalid = 1;
+                if ((araddr_reg >> ADDR_WORD_OFFSET) < DEPTH) begin
+                    rdata_reg = mem[araddr_reg >> ADDR_WORD_OFFSET];
                     s_axi_rresp = RESP_OKAY;
                 end else begin
                     rdata_reg = '0;
@@ -231,24 +195,27 @@ module axilite_slave #(
     /////////////////////////////////////////////
      always_ff @(posedge s_axi_aclk or negedge s_axi_aresetn) begin
         if (!s_axi_aresetn) begin
-            // already initialized above
+            for (int i = 0; i < DEPTH; i++) begin
+                mem[i] <= '0;
+            end
         end else begin
             if ( (aw_captured || (s_axi_awvalid && s_axi_awready) ) && ( w_captured || (s_axi_wvalid && s_axi_wready))) begin
-                logic [ADDR_WORD_WIDTH-1:0] windex; //write index
-                windex = ( (aw_captured ? awaddr_reg : s_axi_awaddr ) >> ADDR_WORD_OFFSET );
-                if (windex < DEPTH) begin                   
+
+                logic [ADDR_WORD_WIDTH-1:0] index;
+                logic [DATA_WIDTH-1:0] word;
+                logic [DATA_WIDTH-1:0] wdata_i;
+                logic [DATA_WIDTH/8-1:0] wstrb_i;
+                index = (aw_captured ? awaddr_reg : s_axi_awaddr) >> ADDR_WORD_OFFSET;
+                if (index < DEPTH) begin 
+                    word = mem[index];    
+                    wdata_i = w_captured ? wdata_reg : s_axi_wdata;
+                    wstrb_i = w_captured ? wstrb_reg : s_axi_wstrb;              
                     for (int i = 0; i < (DATA_WIDTH/8); i++) begin
-                        logic wstrb_bit;
-                        logic [DATA_WIDTH-1:0] tmp; 
-                        logic [7:0] src_byte;
-                        wstrb_bit = w_captured ? wstrb_reg[i] : s_axi_wstrb[i];
-                        if (wstrb_bit) begin                         
-                            src_byte = w_captured ? wdata_reg[(i*8)+:8]:s_axi_wdata[(i*8)+:8];
-                            tmp = mem[windex];
-                            tmp[(i*8)+:8] = src_byte;
-                            mem[windex] <= tmp;
+                        if (wstrb_i[i]) begin
+                            word[(i*8)+:8] = wdata_i[(i*8)+:8];
                         end
                     end
+                    mem[index] <= word;
                 end
             end
         end
